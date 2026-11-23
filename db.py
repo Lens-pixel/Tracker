@@ -97,9 +97,11 @@ class Database:
             self._pool = await asyncpg.create_pool(
                 dsn=dsn,
                 ssl=ssl_arg,
-                min_size=1,
+                min_size=0,
                 max_size=5,
-                command_timeout=30,
+                max_inactive_connection_lifetime=45,
+                timeout=15,
+                command_timeout=20,
             )
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -303,10 +305,31 @@ class Database:
             await self._pool.close()
             self._pool = None
 
+    async def _pg_run(self, fn):
+        last_err = None
+        for attempt in range(2):
+            try:
+                async with self._pool.acquire() as conn:
+                    return await fn(conn)
+            except Exception as exc:
+                last_err = exc
+                if attempt == 0 and asyncpg is not None and isinstance(
+                    exc,
+                    (
+                        asyncpg.exceptions.ConnectionDoesNotExistError,
+                        asyncpg.exceptions.InterfaceError,
+                        OSError,
+                    ),
+                ):
+                    logger.warning("Postgres connection dropped, retrying once: %s", exc)
+                    continue
+                raise
+        raise last_err
+
     async def _execute(self, sql: str, params: Sequence[Any] = ()) -> int:
         if self.is_postgres:
-            async with self._pool.acquire() as conn:
-                status = await conn.execute(to_pg_placeholders(sql), *params)
+            pg_sql = to_pg_placeholders(sql)
+            status = await self._pg_run(lambda conn: conn.execute(pg_sql, *params))
             try:
                 return int(status.split()[-1])
             except (ValueError, IndexError):
@@ -319,8 +342,7 @@ class Database:
     async def _insert_returning_id(self, sql: str, params: Sequence[Any] = ()) -> int:
         if self.is_postgres:
             pg_sql = to_pg_placeholders(sql).rstrip().rstrip(";") + " RETURNING id"
-            async with self._pool.acquire() as conn:
-                val = await conn.fetchval(pg_sql, *params)
+            val = await self._pg_run(lambda conn: conn.fetchval(pg_sql, *params))
             return int(val)
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute(sql, tuple(params))
@@ -329,8 +351,8 @@ class Database:
 
     async def _fetchone(self, sql: str, params: Sequence[Any] = ()) -> Optional[dict[str, Any]]:
         if self.is_postgres:
-            async with self._pool.acquire() as conn:
-                row = await conn.fetchrow(to_pg_placeholders(sql), *params)
+            pg_sql = to_pg_placeholders(sql)
+            row = await self._pg_run(lambda conn: conn.fetchrow(pg_sql, *params))
             return dict(row) if row is not None else None
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
@@ -340,8 +362,8 @@ class Database:
 
     async def _fetchall(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
         if self.is_postgres:
-            async with self._pool.acquire() as conn:
-                rows = await conn.fetch(to_pg_placeholders(sql), *params)
+            pg_sql = to_pg_placeholders(sql)
+            rows = await self._pg_run(lambda conn: conn.fetch(pg_sql, *params))
             return [dict(r) for r in rows]
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
@@ -351,8 +373,8 @@ class Database:
 
     async def _fetchval(self, sql: str, params: Sequence[Any] = ()) -> Any:
         if self.is_postgres:
-            async with self._pool.acquire() as conn:
-                return await conn.fetchval(to_pg_placeholders(sql), *params)
+            pg_sql = to_pg_placeholders(sql)
+            return await self._pg_run(lambda conn: conn.fetchval(pg_sql, *params))
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute(sql, tuple(params))
             row = await cur.fetchone()

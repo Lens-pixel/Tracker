@@ -1142,8 +1142,8 @@ async def run_webhook_server(bot: Bot, dp: Dispatcher, config: Config) -> None:
         logger.info("Webhook registered: %s", full_webhook_url)
 
     app = web.Application()
-    app.router.add_get("/", _health_handler)
-    app.router.add_get("/health", _health_handler)
+    app.router.add_route("*", "/", _health_handler)
+    app.router.add_route("*", "/health", _health_handler)
     app.on_startup.append(on_startup)
 
     handler = SimpleRequestHandler(
