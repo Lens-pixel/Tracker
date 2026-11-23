@@ -122,6 +122,7 @@ class Database:
                         sub_until TEXT,
                         onboarded INTEGER DEFAULT 0,
                         terms_accepted_at TEXT,
+                        source TEXT,
                         created_at TEXT NOT NULL
                     )
                     """
@@ -190,6 +191,7 @@ class Database:
                     """
                 )
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TEXT")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS source TEXT")
                 await conn.execute(
                     "ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'stars'"
                 )
@@ -220,6 +222,7 @@ class Database:
                     sub_until TEXT,
                     onboarded INTEGER DEFAULT 0,
                     terms_accepted_at TEXT,
+                    source TEXT,
                     created_at TEXT NOT NULL
                 )
                 """
@@ -289,6 +292,7 @@ class Database:
                 """
             )
             await self._ensure_sqlite_column(db, "users", "terms_accepted_at", "TEXT")
+            await self._ensure_sqlite_column(db, "users", "source", "TEXT")
             await self._ensure_sqlite_column(db, "payments", "provider", "TEXT NOT NULL DEFAULT 'stars'")
             await self._ensure_sqlite_column(db, "payments", "amount_kzt", "INTEGER NOT NULL DEFAULT 0")
             await db.commit()
@@ -359,20 +363,39 @@ class Database:
         user_id: int,
         username: Optional[str],
         first_name: Optional[str],
+        source: Optional[str] = None,
     ) -> dict[str, Any]:
+        existing = await self._fetchone("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+        is_new = existing is None
+        clean_source = (source or "").strip()[:64] or None
         await self._execute(
             """
-            INSERT INTO users (user_id, username, first_name, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO users (user_id, username, first_name, source, created_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 username = EXCLUDED.username,
                 first_name = EXCLUDED.first_name
             """,
-            (user_id, username, first_name, self._now_iso()),
+            (user_id, username, first_name, clean_source, self._now_iso()),
         )
         row = await self._fetchone("SELECT * FROM users WHERE user_id = ?", (user_id,))
         assert row is not None
+        row["is_new"] = is_new
         return row
+
+    async def get_recent_users(self, limit: int = 15) -> list[dict[str, Any]]:
+        return await self._fetchall(
+            """
+            SELECT user_id, username, first_name, source, free_used, sub_until, onboarded, created_at
+            FROM users
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+    async def get_total_users_count(self) -> int:
+        return int(await self._fetchval("SELECT COUNT(*) FROM users") or 0)
 
     async def get_user(self, user_id: int) -> Optional[dict[str, Any]]:
         return await self._fetchone("SELECT * FROM users WHERE user_id = ?", (user_id,))

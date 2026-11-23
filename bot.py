@@ -10,7 +10,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -216,14 +216,46 @@ def build_router(config: Config, db: Database, analyzer: NutritionAnalyzer) -> R
                 reply_markup=main_menu_kb(),
             )
 
+    async def notify_if_new_user(bot: Bot, user: dict) -> None:
+        if not user.get("is_new") or not config.admin_ids:
+            return
+        if user["user_id"] in config.admin_ids:
+            return
+
+        total = await db.get_total_users_count()
+        first_name = html.escape(user.get("first_name") or "Без имени")
+        username = user.get("username")
+        handle = f"@{html.escape(username)}" if username else f'<a href="tg://user?id={user["user_id"]}">профиль</a>'
+        source = html.escape(user.get("source") or "прямой вход")
+
+        text = (
+            f"🆕 <b>Новый пользователь #{total}</b>\n"
+            f"👤 {first_name} ({handle})\n"
+            f"🆔 ID: <code>{user['user_id']}</code>\n"
+            f"🔗 Источник: <b>{source}</b>"
+        )
+        for admin_id in config.admin_ids:
+            try:
+                await bot.send_message(chat_id=admin_id, text=text)
+            except Exception as exc:
+                logger.error("Failed to notify admin %s about new user %s: %s", admin_id, user["user_id"], exc)
+
     @router.message(CommandStart())
-    async def cmd_start(message: Message, state: FSMContext) -> None:
+    async def cmd_start(
+        message: Message,
+        command: CommandObject,
+        state: FSMContext,
+        bot: Bot,
+    ) -> None:
         await state.clear()
+        source = (command.args or "").strip() if command else ""
         user = await db.ensure_user(
             message.from_user.id,
             message.from_user.username,
             message.from_user.first_name,
+            source=source or None,
         )
+        await notify_if_new_user(bot, user)
         if not user.get("terms_accepted_at"):
             await message.answer(get_short_terms_notice(), reply_markup=terms_accept_kb())
             return
@@ -793,6 +825,31 @@ def build_router(config: Config, db: Database, analyzer: NutritionAnalyzer) -> R
             f"{admin_hint}"
         )
 
+    @router.message(Command("users"))
+    async def cmd_users(message: Message) -> None:
+        uid = message.from_user.id
+        if config.admin_ids and uid not in config.admin_ids:
+            return
+        users = await db.get_recent_users(limit=15)
+        if not users:
+            await message.answer("Пока нет пользователей.")
+            return
+
+        lines = ["👥 <b>Последние 15 пользователей:</b>", ""]
+        for idx, u in enumerate(users, start=1):
+            name = html.escape(u.get("first_name") or "Без имени")
+            uname = f"@{html.escape(u['username'])}" if u.get("username") else f"id:{u['user_id']}"
+            src = f" [{html.escape(u['source'])}]" if u.get("source") else ""
+            sub_mark = " ⭐" if db.is_subscribed(u) else ""
+            try:
+                dt_str = datetime.fromisoformat(u["created_at"]).astimezone().strftime("%d.%m %H:%M")
+            except ValueError:
+                dt_str = ""
+            lines.append(
+                f"{idx}. <b>{name}</b> ({uname}){sub_mark}{src} — {u['free_used']} ан. | {dt_str}"
+            )
+        await message.answer("\n".join(lines))
+
     # ---------------- Food analysis & logging ----------------
     async def handle_analysis_result(
         message: Message,
@@ -963,6 +1020,7 @@ def build_router(config: Config, db: Database, analyzer: NutritionAnalyzer) -> R
         user = await db.ensure_user(
             message.from_user.id, message.from_user.username, message.from_user.first_name
         )
+        await notify_if_new_user(bot, user)
         if not await ensure_terms_accepted(message, user):
             return
         if not await ensure_quota_or_paywall(message, user):
@@ -995,6 +1053,7 @@ def build_router(config: Config, db: Database, analyzer: NutritionAnalyzer) -> R
         user = await db.ensure_user(
             message.from_user.id, message.from_user.username, message.from_user.first_name
         )
+        await notify_if_new_user(bot, user)
         if not await ensure_terms_accepted(message, user):
             return
         if not await ensure_quota_or_paywall(message, user):
@@ -1033,7 +1092,7 @@ def build_router(config: Config, db: Database, analyzer: NutritionAnalyzer) -> R
         await message.answer("Нажми, пожалуйста, на одну из кнопок выше ☝️")
 
     @router.message(StateFilter(None), F.text)
-    async def on_food_text(message: Message) -> None:
+    async def on_food_text(message: Message, bot: Bot) -> None:
         text = (message.text or "").strip()
         if not text or text.startswith("/"):
             return
@@ -1041,6 +1100,7 @@ def build_router(config: Config, db: Database, analyzer: NutritionAnalyzer) -> R
         user = await db.ensure_user(
             message.from_user.id, message.from_user.username, message.from_user.first_name
         )
+        await notify_if_new_user(bot, user)
         if not await ensure_terms_accepted(message, user):
             return
         if not await ensure_quota_or_paywall(message, user):

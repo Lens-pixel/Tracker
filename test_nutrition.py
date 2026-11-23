@@ -48,8 +48,15 @@ async def test_db_flow() -> None:
         db = Database(path)
         await db.init()
         uid = 6740328688  # 64-bit Telegram user_id
-        user = await db.ensure_user(uid, "Lenskkrutoi", "Lensx")
+        user = await db.ensure_user(uid, "Lenskkrutoi", "Lensx", source="threads")
         assert user["user_id"] == uid
+        assert user["is_new"] is True
+        assert user["source"] == "threads"
+        user_again = await db.ensure_user(uid, "Lenskkrutoi", "Lensx", source="other")
+        assert user_again["is_new"] is False
+        assert user_again["source"] == "threads"  # original source preserved
+        recent = await db.get_recent_users(5)
+        assert len(recent) == 1 and recent[0]["user_id"] == uid
         assert user["terms_accepted_at"] is None
         assert not db.is_subscribed(user)
         assert await db.get_user_id_by_username("@lenskkrutoi") == uid
