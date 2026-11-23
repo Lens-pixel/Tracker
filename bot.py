@@ -1124,7 +1124,7 @@ async def run_polling_with_optional_health(bot: Bot, dp: Dispatcher, port: int) 
 
 async def main() -> None:
     config = load_config()
-    db = Database(config.db_path)
+    db = Database(config.db_path, database_url=config.database_url)
     await db.init()
 
     analyzer = NutritionAnalyzer(
@@ -1140,13 +1140,17 @@ async def main() -> None:
     dp = Dispatcher()
     dp.include_router(build_router(config, db, analyzer))
 
-    me = await bot.get_me()
-    logger.info("Bot started: @%s (id=%s)", me.username, me.id)
+    try:
+        me = await bot.get_me()
+        logger.info("Bot started: @%s (id=%s)", me.username, me.id)
 
-    if config.port > 0 and config.webhook_url:
-        await run_webhook_server(bot, dp, config)
-    else:
-        await run_polling_with_optional_health(bot, dp, config.port)
+        if config.port > 0 and config.webhook_url:
+            await run_webhook_server(bot, dp, config)
+        else:
+            await run_polling_with_optional_health(bot, dp, config.port)
+    finally:
+        await db.close()
+        await bot.session.close()
 
 
 if __name__ == "__main__":

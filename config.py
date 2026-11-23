@@ -24,6 +24,7 @@ class Config:
     kaspi_price_3m_kzt: int
     support_contact: str
     db_path: str
+    database_url: str
     admin_ids: tuple[int, ...]
     port: int
     webhook_url: str
@@ -46,6 +47,7 @@ def load_config() -> Config:
 
     raw_db = os.getenv("DB_PATH", "calorie_bot.db").strip()
     db_path = str(Path(raw_db) if Path(raw_db).is_absolute() else (BASE_DIR / raw_db))
+    database_url = os.getenv("DATABASE_URL", "").strip()
 
     raw_port = os.getenv("PORT", "").strip()
     port = int(raw_port) if raw_port.isdigit() else 0
@@ -74,6 +76,7 @@ def load_config() -> Config:
         kaspi_price_3m_kzt=int(os.getenv("KASPI_PRICE_3M_KZT", "5990")),
         support_contact=os.getenv("SUPPORT_CONTACT", "").strip(),
         db_path=db_path,
+        database_url=database_url,
         admin_ids=admin_ids,
         port=port,
         webhook_url=webhook_url,
